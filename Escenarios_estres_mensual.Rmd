@@ -1,0 +1,483 @@
+---
+title: "Escenarios de estrés"
+author: "JAML"
+date: "08/04/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Librerías
+```{r instalation, echo= TRUE, message=FALSE}
+rm(list=ls()) 
+tiempo_inicial <- Sys.time()
+library(RODBC)
+library(dplyr)
+library(purrr)
+library(data.table)
+library(knitr)
+library(tinytex)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Conexión con el servidor de SQL
+```{r eval = FALSE, echo = FALSE}
+canal <-odbcConnect("CONECBD190")
+```
+
+## Parámetros de ejecución
+```{r}
+mes_corte <-  "202203"  # Mes en que se aplicará el escenario de estrés 
+Escenarios <- c(-.0696,-.1796,-.1796)   # Porcentaje de transferencia de creditos ROA a REA. Negativo: Desempleo, Positivo: Empleo
+ESC_NOROA <- c(.039,.044,.069)    # Porcentaje de aumento de créditos no Roa con PI al 100%. Negativo: Disminución, Positivo: Aumento
+#POR_PI_REA <-          # Factor de aumento en PI de créditos desocupados (se calcula automaticamente tomando el aumento en PI de los créditos REA_REA)
+#POR_PI_ROA <-        # Factor de aumento en PI de créditos Ocupados (se calcula automaticamente tomando el aumento en PI de los créditos ROA_ROA)
+POR_PI_CAMBIO <-1       # Factor de amento en PI de los créditos con perdida de relación laboral ejemplo 1.1 = al 10% de aumento
+```
+
+
+## Parámetros calculados
+```{r}
+fh_actual <- as.Date(paste0(substr(mes_corte,1,4),"-",substr(mes_corte,5,6),"-","28"),format = "%Y-%m-%d")
+fh_anterior <- fh_actual-30
+mes_anteior <- paste0(substr(fh_anterior,1,4),substr(fh_anterior,6,7))
+```
+
+## Directorio inicial
+```{r message=FALSE}
+directorio <- "C:\\Users\\IN335361\\Documents\\2020\\19_04052020 Estres 2020"
+setwd(directorio)
+#Creación de folder para los catálogos:
+dir.create(paste0("Estres_",mes_corte))
+```
+
+## Tabla insumo RIS_CUOEF_aaaamm
+```{r eval = FALSE, echo = FALSE}
+Base <-sqlQuery(canal , query = paste("SELECT NUMCRED_14, SALDO_CUOEF, PC_PARTICIPACION_CUOEF, 
+ESTATUS,INDICA_R,PRODUCTO,RGOCREDITO_CUOEF,RGOEXTENSION_CUOEF,PROB_INCUMPLIMIENTO_CUOEF,SEVERIDAD_CUOEF,
+SALDO_TEORICO_CUOEF,IN_CREDITO_PARTICIPADO,SITUACION,POOL_CUOEF,POOL,F_OTORG,MONEDA from RIS_CUOEF_", mes_corte, " where POOL_CUOEF='INF'",sep=""),
+                                as.is=c(T,F,F,T,T,T,F,F,F,F,F,F,T,T,T,T,T))
+head(Base)
+```
+## Créditos de un mes anterior
+
+```{r eval = FALSE, echo = FALSE}
+Base_anterior <-sqlQuery(canal , query = paste0("SELECT NUMCRED_14, SALDO_CUOEF_",mes_anteior,"=SALDO_CUOEF,
+PC_PARTICIPACION_CUOEF_",mes_anteior,"=PC_PARTICIPACION_CUOEF,ESTATUS_",mes_anteior,"=ESTATUS,INDICA_R_",mes_anteior,"=INDICA_R,  
+PRODUCTO_",mes_anteior,"=PRODUCTO,RGOCREDITO_CUOEF_",mes_anteior,"=RGOCREDITO_CUOEF,RGOEXTENSION_CUOEF_",mes_anteior,"=RGOEXTENSION_CUOEF,PROB_INCUMPLIMIENTO_CUOEF_",mes_anteior,"=PROB_INCUMPLIMIENTO_CUOEF,SEVERIDAD_CUOEF_",mes_anteior,"=SEVERIDAD_CUOEF,
+SALDO_TEORICO_CUOEF_",mes_anteior,"=SALDO_TEORICO_CUOEF,IN_CREDITO_PARTICIPADO_",mes_anteior,"=IN_CREDITO_PARTICIPADO,
+SITUACION_",mes_anteior,"=SITUACION,POOL_CUOEF_",mes_anteior,"=POOL_CUOEF,POOL_",mes_anteior,"=POOL,F_OTORG_",mes_anteior,"=F_OTORG,MONEDA_",mes_anteior,"=MONEDA from RIS_CUOEF_", mes_anteior, " where POOL_CUOEF='INF'",sep=""),
+                                as.is=c(T,F,F,T,T,T,F,F,F,F,F,F,T,T,T,T,T))
+head(Base_anterior)
+```
+## Unión de bases
+```{r eval = FALSE, echo = FALSE}
+Tabla_completa <- merge(Base,Base_anterior, by="NUMCRED_14",all.x=TRUE)
+head(Tabla_completa)
+directorio <- paste0("C:\\Users\\IN335361\\Documents\\2020\\19_04052020 Estres 2020","\\Estres_",mes_corte)
+setwd(directorio)
+write.table(sapply(Tabla_completa,class), paste0("tipo_variables_", mes_corte,".csv"), row.names= F )
+fwrite(Tabla_completa, paste0("Tabla_completa", mes_corte,".CSV"), sep= ",",row.names= F)
+```
+## Lectura de tabla
+```{r}
+directorio <- paste0("C:\\Users\\IN335361\\Documents\\2020\\19_04052020 Estres 2020","\\Estres_",mes_corte)
+setwd(directorio)
+catalogos <- fread(paste0('tipo_variables_', mes_corte,'.csv'), header = T)
+
+  Tabla_completa <- fread(paste0('Tabla_completa', mes_corte, '.CSV'),
+        sep = ",",
+        header = T,
+        stringsAsFactors = F, colClasses = paste(catalogos$x,sep = ','))
+kable(head(Tabla_completa))  
+```
+
+
+
+## Cambios de Régimen y PI
+```{r}
+portafolio <- as.data.table(Tabla_completa %>% filter(IN_CREDITO_PARTICIPADO<2 & SITUACION != 'CL'))
+# Etiqueta de movimientos de régimen
+portafolio[get(paste0("PRODUCTO_",mes_anteior)) != "" & get(paste0("PRODUCTO_",mes_anteior)) =='Roa' & PRODUCTO != "Roa" ,Roa_rea := 1]
+portafolio[get(paste0("PRODUCTO_",mes_anteior)) != "" & get(paste0("PRODUCTO_",mes_anteior))!='Roa' & PRODUCTO == "Roa" ,Rea_roa := 1]
+portafolio[get(paste0("PRODUCTO_",mes_anteior)) != "" & get(paste0("PRODUCTO_",mes_anteior))=='Rea' & PRODUCTO == "Rea" ,Rea_rea := 1]
+portafolio[get(paste0("PRODUCTO_",mes_anteior)) != "" & get(paste0("PRODUCTO_",mes_anteior))=='Roa' & PRODUCTO == "Roa" ,Roa_roa := 1]
+
+# Creditos que pasan de PI = 1 a PI <1
+portafolio[get(paste0("PROB_INCUMPLIMIENTO_CUOEF_",mes_anteior)) == 1 & PROB_INCUMPLIMIENTO_CUOEF < 1 ,PI_disminucion := 1]
+portafolio[get(paste0("PROB_INCUMPLIMIENTO_CUOEF_",mes_anteior)) < 1 & PROB_INCUMPLIMIENTO_CUOEF == 1 ,PI_aumento := 1]
+
+# X Porcentaje de aumento en PI (se calcula automaticamente tomando el aumento en PI de los REA_REA)
+POR_PI_REA<- portafolio[Rea_rea == 1, sum(PROB_INCUMPLIMIENTO_CUOEF,na.rm = T)/.N]/portafolio[Rea_rea == 1, sum(get(paste0("PROB_INCUMPLIMIENTO_CUOEF_",mes_anteior)), na.rm = T)/.N]
+
+# X Porcentaje de aumento en PI (se calcula automaticamente tomando el aumento en PI de los ROA_ROA)
+POR_PI_ROA<- portafolio[Roa_roa == 1, sum(PROB_INCUMPLIMIENTO_CUOEF,na.rm = T)/.N]/portafolio[Roa_roa == 1, sum(get(paste0("PROB_INCUMPLIMIENTO_CUOEF_",mes_anteior)), na.rm = T)/.N]
+
+#Se muestran los cambios
+kable(cbind("Roa_rea"=portafolio[Roa_rea == 1,.N],"Rea_roa"=portafolio[Rea_roa == 1,.N]))
+kable(cbind("Roa_roa"=portafolio[Roa_roa == 1,.N],"Rea_rea"=portafolio[Rea_rea == 1,.N]))
+kable(cbind("De PI = 1 a PI <1"=portafolio[PI_disminucion == 1,.N]))
+kable(cbind("% aumento de PI para Rea_rea"=POR_PI_REA, "% aumento de PI para Roa_roa"=POR_PI_ROA))
+```
+## Función de muestro bootstrap (promedio PI y SE)
+```{r}
+bootstrap <- function() {
+if (Escenarios[i] < 0 ){
+promedio <- mean((sample(portafolio[Roa_rea ==1,PROB_INCUMPLIMIENTO_CUOEF],n*abs(Escenarios[i]),replace = TRUE)),na.rm=TRUE)
+promedio_sev<- mean((sample(portafolio[Roa_rea ==1,SEVERIDAD_CUOEF],n*abs(Escenarios[i]),replace = TRUE)),na.rm=TRUE)
+promedio_saldo<- mean((sample(portafolio[PRODUCTO == 'Roa',SALDO_CUOEF*PC_PARTICIPACION_CUOEF],n*abs(Escenarios[i]),replace = TRUE)),na.rm=TRUE)
+}else{
+promedio<- mean((sample(portafolio[Rea_roa ==1,PROB_INCUMPLIMIENTO_CUOEF],n*abs(Escenarios[i]),replace = TRUE)),na.rm=TRUE)
+promedio_sev<- mean((sample(portafolio[Rea_roa ==1,SEVERIDAD_CUOEF],n*abs(Escenarios[i]),replace = TRUE)),na.rm=TRUE)
+promedio_saldo<- mean((sample(portafolio[PRODUCTO == 'Rea',SALDO_CUOEF*PC_PARTICIPACION_CUOEF],n*abs(Escenarios[i]),replace = TRUE)),na.rm=TRUE)
+}
+tibble(promedio,promedio_sev,promedio_saldo)
+}
+
+```
+
+
+## Obtención de promedios bootstrap
+```{r}
+n <- as.integer(count(portafolio)) #Numero de creditos del portafolio
+for (i in 1:length(Escenarios)){
+a <- as.data.frame(map_df(1:1000, ~bootstrap(), .id = "serie"))
+a$rc_promedio <- a$promedio * a$promedio_sev *a$promedio_saldo 
+a$pi_acum <- cumsum(a$promedio)
+a$pi_montecarlo <- a$pi_acum/as.numeric(a$serie)
+a$SE_acum <- cumsum(a$promedio_sev)
+a$SE_montecarlo <- a$SE_acum/as.numeric(a$serie)
+promedio_PI <- as.numeric(a %>% summarise(mean(promedio)))
+promedio_PI_REA_Actual <- as.numeric(portafolio[PRODUCTO =="Rea" ,mean(PROB_INCUMPLIMIENTO_CUOEF,na.rm=TRUE)])
+promedio_SE <- as.numeric(a %>% summarise(mean(promedio_sev)))
+plot(a$pi_montecarlo,type='l')
+plot(a$SE_montecarlo,type='l')
+assign(paste0("promedio_PI_",i),promedio_PI)
+assign(paste0("promedio_SE_",i),promedio_SE)
+print(kable(get(paste0("promedio_PI_",i))))
+print(kable(get(paste0("promedio_SE_",i))))
+}
+
+```
+
+
+## Distrubución actual y modificado del portafolio
+```{r}
+Portafolio_dstri <- as.data.table(portafolio %>% select(PRODUCTO) %>% group_by(PRODUCTO) %>% summarise(cuenta=n()))
+Portafolio_dstri[,Regimen_base:= cuenta/n]
+for (i in 1:length(Escenarios)){
+Portafolio_dstri[,paste0("Regimen_E",i):= ifelse(PRODUCTO == 'Roa',Regimen_base+Escenarios[i],ifelse(PRODUCTO=='Rea',Regimen_base-Escenarios[i],Regimen_base))]  
+}
+Portafolio_dstri <- rbind(Portafolio_dstri[3,],Portafolio_dstri[2,],Portafolio_dstri[1,])
+#Se muestra la distubución
+kable(Portafolio_dstri)
+```
+
+## Créditos con PI = 100
+```{r}
+PI_100<- data.table(PI_100_base = portafolio[PROB_INCUMPLIMIENTO_CUOEF == 1 ,.N]/n)
+
+for ( i in 1:length(ESC_NOROA)) {
+PI_100[,paste0("PI_100_E",i) := portafolio[PROB_INCUMPLIMIENTO_CUOEF == 1 ,.N]/n + ESC_NOROA[i]]
+}
+kable(PI_100)
+```
+
+
+
+## Función de muestro bootstrap (Riesgo de Crédito y Riesgo de Extensión)
+```{r}
+bootstrap_RC <- function() {
+if (Escenarios[i] < 0 ){
+# Muestra de créditos que cambian de ROA a REA
+portafolio[sample(portafolio[PRODUCTO =="Roa",which = TRUE],n*abs(Escenarios[i]), replace = FALSE),c("REGIMEN_ESTRESADO","PI_ESTRESADO","SEV_ESTRESADO") := .('Rea',promedio_PI*POR_PI_CAMBIO,promedio_SE)]
+# Número de créditos que cambiaron  
+n_rea <- portafolio[REGIMEN_ESTRESADO == "Rea",.N]
+# Restructuras en los créditos que cambiaron
+Reestructuras_actuales <- portafolio[REGIMEN_ESTRESADO == "Rea" & INDICA_R == "Y",.N]/n_rea
+# Cálculo del número de restructuras a muestrear
+Reestructuras <- Reestructuras_necesarias - Reestructuras_actuales
+# Se obtiene la muestra de reestructuras
+portafolio[sample(portafolio[REGIMEN_ESTRESADO =="Rea" & INDICA_R != "Y",which = TRUE],n_rea*abs(Reestructuras), replace = FALSE),REESTRUCTURA_ESTRESADO := 'Y']
+#Se obtiene la muestra de los creditos que aumentan su PI a 100%
+portafolio[sample(portafolio[PRODUCTO =="Rea" & PROB_INCUMPLIMIENTO_CUOEF < 1  ,which = TRUE],n*abs(ESC_NOROA[i]),replace = FALSE), c("PI_ESTRESADO","ESTATUS_ESTRESADO") := .(1,'VEN')]
+#Multiplicación de los créditos que se quedan desocupados por e factor de aumento
+portafolio[PRODUCTO =="Rea" & is.na(PI_ESTRESADO),PI_ESTRESADO := ifelse(PROB_INCUMPLIMIENTO_CUOEF == 1,PROB_INCUMPLIMIENTO_CUOEF,PROB_INCUMPLIMIENTO_CUOEF*POR_PI_REA)]
+#Estresar los créditos con buen comportamiento
+portafolio[PI_disminucion == 1 & is.na(PI_ESTRESADO) ,c("PI_ESTRESADO","ESTATUS_ESTRESADO") := .(1,'VEN')]
+#Quitar los NA
+portafolio[is.na(REGIMEN_ESTRESADO),REGIMEN_ESTRESADO := PRODUCTO]
+portafolio[is.na(PI_ESTRESADO),PI_ESTRESADO := PROB_INCUMPLIMIENTO_CUOEF]
+portafolio[is.na(SEV_ESTRESADO),SEV_ESTRESADO := SEVERIDAD_CUOEF]
+portafolio[is.na(ESTATUS_ESTRESADO),ESTATUS_ESTRESADO := ESTATUS]
+portafolio[is.na(REESTRUCTURA_ESTRESADO),REESTRUCTURA_ESTRESADO := INDICA_R] 
+#datos a nivel crédito
+portafolio[,reg:= ifelse(REGIMEN_ESTRESADO=='Rea',1,0)]
+portafolio[,est:= ifelse(ESTATUS_ESTRESADO=='VEN',1,0)] 
+portafolio[,res:= ifelse(REESTRUCTURA_ESTRESADO=='Y',1,0)] 
+#Cálculo de RC y RE
+portafolio[,c("RC_E1","RET_E1") := .(PI_ESTRESADO*SEV_ESTRESADO*(SALDO_CUOEF*PC_PARTICIPACION_CUOEF),ifelse(SALDO_CUOEF>SALDO_TEORICO_CUOEF,(SALDO_CUOEF-SALDO_TEORICO_CUOEF)*(1-PI_ESTRESADO)*PC_PARTICIPACION_CUOEF,0))]
+} else{
+  
+portafolio[sample(portafolio[PRODUCTO =="Rea",which = TRUE],n*abs(Escenarios), replace = FALSE),c("PI_ESTRESADO","SEV_ESTRESADO") := .(promedio_PI*POR_PI_CAMBIO,promedio_SE)]
+portafolio[sample(portafolio[PRODUCTO =="Rea" & PROB_INCUMPLIMIENTO_CUOEF == 1  ,which = TRUE],n*abs(ESC_NOROA),replace = FALSE), PI_ESTRESADO := promedio_PI_REA_Actual]  
+portafolio[PRODUCTO =="Roa" & is.na(PI_ESTRESADO),PI_ESTRESADO := ifelse(PROB_INCUMPLIMIENTO_CUOEF == 1,PROB_INCUMPLIMIENTO_CUOEF,PROB_INCUMPLIMIENTO_CUOEF*POR_PI_ROA)]
+portafolio[is.na(PI_ESTRESADO),PI_ESTRESADO := PROB_INCUMPLIMIENTO_CUOEF]
+portafolio[is.na(SEV_ESTRESADO),SEV_ESTRESADO := SEVERIDAD_CUOEF]
+ 
+portafolio[,c("RC_E1","RET_E1") := .(PI_ESTRESADO*SEV_ESTRESADO*(SALDO_CUOEF*PC_PARTICIPACION_CUOEF),ifelse((SALDO_CUOEF*PC_PARTICIPACION_CUOEF)>SALDO_TEORICO_CUOEF,((SALDO_CUOEF*PC_PARTICIPACION_CUOEF)-SALDO_TEORICO_CUOEF)*(1-PI_ESTRESADO),0))] 
+  
+}
+portafolio[is.na(RC_E1), RC_E1 := RGOCREDITO_CUOEF]
+portafolio[,RET_E1 := ifelse(RC_E1>RET_E1,0,RET_E1-RC_E1)]
+portafolio[is.na(RET_E1), RET_E1 := RGOEXTENSION_CUOEF]
+
+portafolio[,c("SUMA_REG","SUMA_RES","SUMA_EST","SUMA_RC","SUMA_RE"):=.(SUMA_REG + reg, SUMA_RES + res, SUMA_EST + est, SUMA_RC + RC_E1, SUMA_RE + RET_E1)]
+Escenario_resumen<- portafolio[,.(Creditos=.N,RC_Actual=sum(RGOCREDITO_CUOEF),RC_ESTRES=sum(RC_E1),RE_Actual=sum(RGOEXTENSION_CUOEF),RE_ESTRES=sum(RET_E1))]
+
+portafolio[,PI_ESTRESADO:=NULL]
+portafolio[,SEV_ESTRESADO:=NULL]
+portafolio[,REGIMEN_ESTRESADO:=NULL]
+portafolio[,ESTATUS_ESTRESADO:=NULL]
+portafolio[,REESTRUCTURA_ESTRESADO:=NULL]
+portafolio[,reg:=NULL]
+portafolio[,est:=NULL]
+portafolio[,res:=NULL]
+portafolio[,RC_E1:=NULL]
+portafolio[,RET_E1:=NULL]
+
+# portafolio[,SUMA_REG:=NULL]
+# portafolio[,SUMA_RES:=NULL]
+# portafolio[,SUMA_EST:=NULL]
+# portafolio[,SUMA_RC:=NULL]
+# portafolio[,SUMA_RE:=NULL]
+gc()
+Escenario_resumen
+}
+```
+
+## Obtención de Riesgo de Crédito y Riesgo de Extensión
+```{r}
+Reestructuras_necesarias <- portafolio[PRODUCTO == "Rea" & INDICA_R=='Y',.N]/portafolio[PRODUCTO == "Rea",.N]
+for (i in 1:length(Escenarios)){
+portafolio[,c("SUMA_REG","SUMA_RES","SUMA_EST","SUMA_RC","SUMA_RE"):=.(0,0,0,0,0)]
+RC <- as.data.frame(map_df(1:300, ~bootstrap_RC(), .id = "serie"))
+portafolio[,paste0(c("SUMA_REG","SUMA_RES","SUMA_EST","SUMA_RC","SUMA_RE"),i):=.(SUMA_REG, SUMA_RES, SUMA_EST, SUMA_RC, SUMA_RE)]
+RC$RC_acum <- cumsum(RC$RC_ESTRES)
+RC$RC_montecarlo <- RC$RC_acum/as.numeric(RC$serie)
+RC$RE_acum <- cumsum(RC$RE_ESTRES)
+RC$RE_montecarlo <- RC$RE_acum/as.numeric(RC$serie)
+hist(RC$RC_ESTRES)
+hist(RC$RE_ESTRES)
+plot(RC$RC_montecarlo,type='l')
+plot(RC$RE_montecarlo,type='l')
+gc()
+#rm(RC)
+
+## Límites de confianza
+
+RC <- as.data.table(RC)
+media_rc <- RC[,mean(RC_ESTRES)]
+desv_rc <- RC[,sd(RC_ESTRES)]
+nivel <- qnorm(0.005,0,1)*-1
+error.est_rc <- desv_rc
+margen.error_rc <- nivel * error.est_rc
+lim.inf_rc <- media_rc - margen.error_rc # Límite inferior del intervalo
+lim.sup_rc <- media_rc + margen.error_rc # Límite superior del intervalo
+kable(cbind(lim.inf_rc,media_rc,lim.sup_rc))
+
+media_re <- RC[,mean(RE_ESTRES)]
+desv_re <- RC[,sd(RE_ESTRES)]
+nivel <- qnorm(0.005,0,1)*-1
+error.est_re <- desv_re
+margen.error_re <- nivel * error.est_re
+lim.inf_re <- media_re - margen.error_re # Límite inferior del intervalo
+lim.sup_re <- media_re + margen.error_re # Límite superior del intervalo
+kable(cbind(lim.inf_re,media_re,lim.sup_re))
+
+## Tabla final cn resultados globales
+
+
+riesgo_credito <- rbind(lim.inf_rc,RC[,apply(.SD,2,mean),.SDcols=c('RC_ESTRES')],lim.sup_rc)
+riesgo_extension <- rbind(lim.inf_re,RC[,apply(.SD,2,mean),.SDcols=c('RE_ESTRES')],lim.sup_re)
+
+if (i == 1){
+riesgo_credito <- cbind(RC[,apply(.SD,2,mean),.SDcols=c('RC_Actual')],riesgo_credito)
+riesgo_extension <- cbind(RC[,apply(.SD,2,mean),.SDcols=c('RE_Actual')],riesgo_extension)
+
+distrubucion <- Portafolio_dstri[,.SD,.SDcols=c('Regimen_base',paste0('Regimen_E',i))]
+reservas <- rbind(riesgo_credito,riesgo_extension)
+PI_100_tabla <- cbind(PI_100[,1],PI_100[,.SD,.SDcols = paste0("PI_100_E",i)])
+
+lim.inf_Total <- cbind(as.data.table(reservas[1,] + reservas[4,])[1,],as.data.table(reservas[1,] + reservas[4,])[2,])
+Reserva_Total <- cbind(as.data.table(reservas[2,] + reservas[5,])[1,],as.data.table(reservas[2,] + reservas[5,])[2,])
+lim.sup_Total <- cbind(as.data.table(reservas[3,] + reservas[6,])[1,],as.data.table(reservas[3,] + reservas[6,])[2,])
+
+TABLA_final <- rbind(distrubucion,PI_100_tabla,reservas,use.names=FALSE)
+TABLA_final <- rbind(distrubucion,PI_100_tabla,reservas,lim.inf_Total,Reserva_Total,lim.sup_Total,use.names=FALSE)
+nombre_estres <- paste0("Escenario ", i, " estresado:Empleo = ",Escenarios[i]*100,"%", " y ",ESC_NOROA[i]*100,"%"," de PI=1 ")
+colnames(TABLA_final) <- c("Escenario base", nombre_estres)
+
+}else {
+  distrubucion <- Portafolio_dstri[,.SD,.SDcols=c(paste0('Regimen_E',i))]
+reservas <- rbind(riesgo_credito,riesgo_extension)
+PI_100_tabla <- PI_100[,.SD,.SDcols = paste0("PI_100_E",i)]
+lim.inf_Total <- as.data.table(reservas[1,] + reservas[4,])
+Reserva_Total <- as.data.table(reservas[2,] + reservas[5,])
+lim.sup_Total <- as.data.table(reservas[3,] + reservas[6,])
+Tabla_escenario <- rbind(distrubucion,PI_100_tabla,reservas,lim.inf_Total,Reserva_Total,lim.sup_Total,use.names=FALSE)
+nombre_estres <- paste0("Escenario ", i, " estresado:Empleo = ",Escenarios[i]*100,"%", " y ",ESC_NOROA[i]*100,"%"," de PI=1 ")
+colnames(Tabla_escenario) <- c(nombre_estres)
+TABLA_final <- cbind(TABLA_final,Tabla_escenario)
+}
+}
+row.names(TABLA_final) <- c("% de créditos en ROA","% de créditos en REA","% de Prórrogas","Créditos en No ROA con PI al 100%","lim_inf_rc","Riesgo de Crédito","lim_sup_rc","lim_inf_re","Riesgo de Extensión","lim_sup_re","lim_inf_reserva","Reserva Total","lim_sup_reserva")
+
+Descripcion <- rownames(TABLA_final)
+TABLA_final <- cbind(Descripcion,TABLA_final)
+
+ICV_REGRESION <- 0.8113 - 10.0996 * TABLA_final[4,2:5] - 2.7127*TABLA_final[2,2:5]+19.2263*TABLA_final[4,2:5]*TABLA_final[4,2:5]+31.1888*TABLA_final[4,2:5]*TABLA_final[2,2:5]
+
+ICV_REGRESION <- cbind("ICV_regresion",ICV_REGRESION)
+TABLA_final <- rbind(TABLA_final,ICV_REGRESION,use.names=FALSE)
+kable(TABLA_final, Row.Names=rownames(TABLA_final))
+
+
+```
+
+## Tabla final con resultados por cédito
+```{r}
+for (i in 1:length(Escenarios)){
+
+  portafolio[,paste0("E",i,"_RIESGO_CREDITO"):=.SD/300,.SDcols = paste0("SUMA_RC",i)]
+  portafolio[,paste0("E",i,"_RIESGO_EXTENSION"):=.SD/300,.SDcols = paste0("SUMA_RE",i)]
+  
+}
+for (i in 1:length(Escenarios)){
+if (Escenarios[i] < 0 ){
+# Muestra de créditos que cambian de ROA a REA
+portafolio[sample(portafolio[PRODUCTO =="Roa",which = TRUE],n*abs(Escenarios[i]), replace = FALSE),c("REGIMEN_ESTRESADO","PI_ESTRESADO","SEV_ESTRESADO") := .('Rea',promedio_PI*POR_PI_CAMBIO,promedio_SE)]
+# Número de créditos que cambiaron  
+n_rea <- portafolio[REGIMEN_ESTRESADO == "Rea",.N]
+# Restructuras en los créditos que cambiaron
+Reestructuras_actuales <- portafolio[REGIMEN_ESTRESADO == "Rea" & INDICA_R == "Y",.N]/n_rea
+# Cálculo del número de restructuras a muestrear
+Reestructuras <- Reestructuras_necesarias - Reestructuras_actuales
+# Se obtiene la muestra de reestructuras
+portafolio[sample(portafolio[REGIMEN_ESTRESADO =="Rea" & INDICA_R != "Y",which = TRUE],n_rea*abs(Reestructuras), replace = FALSE),REESTRUCTURA_ESTRESADO := 'Y']
+#Se obtiene la muestra de los creditos que aumentan su PI a 100%
+portafolio[sample(portafolio[PRODUCTO =="Rea" & PROB_INCUMPLIMIENTO_CUOEF < 1  ,which = TRUE],n*abs(ESC_NOROA[i]),replace = FALSE), c("PI_ESTRESADO","ESTATUS_ESTRESADO") := .(1,'VEN')]
+#Multiplicación de los créditos que se quedan desocupados por e factor de aumento
+portafolio[PRODUCTO =="Rea" & is.na(PI_ESTRESADO),PI_ESTRESADO := ifelse(PROB_INCUMPLIMIENTO_CUOEF == 1,PROB_INCUMPLIMIENTO_CUOEF,PROB_INCUMPLIMIENTO_CUOEF*POR_PI_REA)]
+#Estresar los créditos con buen comportamiento
+portafolio[PI_disminucion == 1 & is.na(PI_ESTRESADO) ,c("PI_ESTRESADO","ESTATUS_ESTRESADO") := .(1,'VEN')]
+#Quitar los NA
+portafolio[is.na(REGIMEN_ESTRESADO),REGIMEN_ESTRESADO := PRODUCTO]
+portafolio[is.na(PI_ESTRESADO),PI_ESTRESADO := PROB_INCUMPLIMIENTO_CUOEF]
+portafolio[is.na(SEV_ESTRESADO),SEV_ESTRESADO := SEVERIDAD_CUOEF]
+portafolio[is.na(ESTATUS_ESTRESADO),ESTATUS_ESTRESADO := ESTATUS]
+portafolio[is.na(REESTRUCTURA_ESTRESADO),REESTRUCTURA_ESTRESADO := INDICA_R] 
+#datos a nivel crédito
+portafolio[,reg:= ifelse(REGIMEN_ESTRESADO=='Rea',1,0)]
+portafolio[,est:= ifelse(ESTATUS_ESTRESADO=='VEN',1,0)] 
+portafolio[,res:= ifelse(REESTRUCTURA_ESTRESADO=='Y',1,0)] 
+#Cálculo de RC y RE
+portafolio[,c("RC_E1","RET_E1") := .(PI_ESTRESADO*SEV_ESTRESADO*(SALDO_CUOEF*PC_PARTICIPACION_CUOEF),ifelse(SALDO_CUOEF>SALDO_TEORICO_CUOEF,(SALDO_CUOEF-SALDO_TEORICO_CUOEF)*(1-PI_ESTRESADO)*PC_PARTICIPACION_CUOEF,0))]
+} else{
+  
+portafolio[sample(portafolio[PRODUCTO =="Rea",which = TRUE],n*abs(Escenarios), replace = FALSE),c("PI_ESTRESADO","SEV_ESTRESADO") := .(promedio_PI*POR_PI_CAMBIO,promedio_SE)]
+portafolio[sample(portafolio[PRODUCTO =="Rea" & PROB_INCUMPLIMIENTO_CUOEF == 1  ,which = TRUE],n*abs(ESC_NOROA),replace = FALSE), PI_ESTRESADO := promedio_PI_REA_Actual]  
+portafolio[PRODUCTO =="Roa" & is.na(PI_ESTRESADO),PI_ESTRESADO := ifelse(PROB_INCUMPLIMIENTO_CUOEF == 1,PROB_INCUMPLIMIENTO_CUOEF,PROB_INCUMPLIMIENTO_CUOEF*POR_PI_ROA)]
+portafolio[is.na(PI_ESTRESADO),PI_ESTRESADO := PROB_INCUMPLIMIENTO_CUOEF]
+portafolio[is.na(SEV_ESTRESADO),SEV_ESTRESADO := SEVERIDAD_CUOEF]
+ 
+portafolio[,c("RC_E1","RET_E1") := .(PI_ESTRESADO*SEV_ESTRESADO*(SALDO_CUOEF*PC_PARTICIPACION_CUOEF),ifelse((SALDO_CUOEF*PC_PARTICIPACION_CUOEF)>SALDO_TEORICO_CUOEF,((SALDO_CUOEF*PC_PARTICIPACION_CUOEF)-SALDO_TEORICO_CUOEF)*(1-PI_ESTRESADO),0))] 
+}
+
+  portafolio[,c(paste0("E",i,c("_PRODUCTO","_PI","_SEV","_ESTATUS","_REESTRUCTURA"))) := .(REGIMEN_ESTRESADO,PI_ESTRESADO,SEV_ESTRESADO,ESTATUS_ESTRESADO,REESTRUCTURA_ESTRESADO)]
+  
+portafolio[,PI_ESTRESADO:=NULL]
+portafolio[,SEV_ESTRESADO:=NULL]
+portafolio[,REGIMEN_ESTRESADO:=NULL]
+portafolio[,ESTATUS_ESTRESADO:=NULL]
+portafolio[,REESTRUCTURA_ESTRESADO:=NULL]  
+  
+}
+```
+
+```{r}
+vector <- paste0("E",1:length(Escenarios))
+vector_2 <- c("_PRODUCTO","_PI","_SEV","_ESTATUS","_REESTRUCTURA","_RIESGO_CREDITO","_RIESGO_EXTENSION")
+
+tabla_SQL <- portafolio[,.SD,.SDcols=c("NUMCRED_14","SALDO_CUOEF","PC_PARTICIPACION_CUOEF","ESTATUS","INDICA_R", "PRODUCTO","RGOCREDITO_CUOEF","RGOEXTENSION_CUOEF","PROB_INCUMPLIMIENTO_CUOEF","SEVERIDAD_CUOEF",
+"SALDO_TEORICO_CUOEF","IN_CREDITO_PARTICIPADO","SITUACION","POOL_CUOEF","POOL","F_OTORG","MONEDA",paste0(rep(vector, each = length(vector_2)), vector_2))]
+
+cols <- colnames(tabla_SQL[,1:17])
+setnames(tabla_SQL, cols, tolower(colnames(tabla_SQL[,1:17])))
+
+
+no_portafolio <- as.data.table(Tabla_completa %>% filter(IN_CREDITO_PARTICIPADO >= 2 | SITUACION == 'CL'))
+
+for (i in 1:length(Escenarios)){
+   no_portafolio[,c(paste0("E",i,c("_PRODUCTO","_PI","_SEV","_ESTATUS","_REESTRUCTURA","_RIESGO_CREDITO","_RIESGO_EXTENSION"))) := .(PRODUCTO,PROB_INCUMPLIMIENTO_CUOEF,SEVERIDAD_CUOEF,ESTATUS,INDICA_R,RGOCREDITO_CUOEF,RGOEXTENSION_CUOEF)]
+
+}
+
+tabla_no_portafolio <- no_portafolio[,.SD,.SDcols=c("NUMCRED_14","SALDO_CUOEF","PC_PARTICIPACION_CUOEF","ESTATUS","INDICA_R", "PRODUCTO","RGOCREDITO_CUOEF","RGOEXTENSION_CUOEF","PROB_INCUMPLIMIENTO_CUOEF","SEVERIDAD_CUOEF",
+"SALDO_TEORICO_CUOEF","IN_CREDITO_PARTICIPADO","SITUACION","POOL_CUOEF","POOL","F_OTORG","MONEDA",paste0(rep(vector, each = length(vector_2)), vector_2))]
+
+cols <- colnames(tabla_no_portafolio[,1:17])
+setnames(tabla_no_portafolio, cols, tolower(colnames(tabla_no_portafolio[,1:17])))
+
+tabla_SQL_final <- rbind(tabla_SQL, tabla_no_portafolio)
+
+directorio <- paste0("C:\\Users\\IN335361\\Documents\\2020\\19_04052020 Estres 2020","\\Estres_",mes_corte)
+setwd(directorio)
+write.table(sapply(tabla_SQL_final,class), paste0("tipo_variables_tabla_SQL_final", mes_corte,".csv"), row.names= F )
+fwrite(tabla_SQL_final, paste0("tabla_SQL_final_", mes_corte,".CSV"), sep= ",",row.names= F)
+
+kable(head(tabla_SQL_final))
+
+```
+
+## Consultas de validacición
+```{r}
+Escenario_base <- tabla_SQL_final[in_credito_participado<2 & situacion != 'CL',.(.N,mean(prob_incumplimiento_cuoef,na.rm = T),mean(severidad_cuoef,rm = T),sum(rgocredito_cuoef,rm = T),sum(rgoextension_cuoef,rm = T)), by =producto]
+cols <- colnames(Escenario_base[,2:6])
+setnames(Escenario_base, cols, paste0(c("CREDITOS_","PI_","SEV_","RC_","RE_"),"BASE"))
+kable(Escenario_base)
+
+ICV_Dato_VEN <- tabla_SQL_final[in_credito_participado<2 & situacion != 'CL' & estatus == 'VEN',sum(saldo_cuoef*pc_participacion_cuoef)]/tabla_SQL_final[in_credito_participado<2 & situacion != 'CL' ,sum(saldo_cuoef*pc_participacion_cuoef)]
+
+```
+
+
+```{r}
+for (i in 1:length(Escenarios)){
+assign(paste0("Escenario_E_",i),tabla_SQL_final[in_credito_participado<2 & situacion != 'CL',.(.N,apply(.SD[,1],2,mean,na.rm = T),apply(.SD[,2],2,mean,na.rm = T), sum(.SD[,3],na.rm = T),sum(.SD[,4],na.rm = T)),.SDcols=paste0(vector[i], vector_2[c(2:3,6:7,1)]) ,by =  eval(paste0("E",i,"_PRODUCTO"))])
+assign(paste0("ICV_E_",i),tabla_SQL_final[in_credito_participado<2 & situacion != 'CL' & get(paste0(vector[i],"_ESTATUS")) == 'VEN',sum(saldo_cuoef*pc_participacion_cuoef)]/tabla_SQL_final[in_credito_participado<2 & situacion != 'CL' ,sum(saldo_cuoef*pc_participacion_cuoef)])  
+ICV_Dato_VEN <- c(ICV_Dato_VEN,get(paste0("ICV_E_",i)))
+cols <- colnames(get(paste0("Escenario_E_",i))[,2:6])
+setnames(get(paste0("Escenario_E_",i)), cols, paste0(c("CREDITOS","PI_E","SEV_E","RC_E","RE_E"),i))
+print(kable(get(paste0("Escenario_E_",i))))
+}
+```
+
+```{r}
+ICV_Dato_VEN <-cbind("ICV_DATO_VENCIDOS",ICV_Dato_VEN[1],ICV_Dato_VEN[2],ICV_Dato_VEN[3],ICV_Dato_VEN[4])
+TABLA_final <- rbind(TABLA_final,ICV_Dato_VEN,use.names=FALSE)
+
+
+directorio <- paste0("C:\\Users\\IN335361\\Documents\\2020\\19_04052020 Estres 2020","\\Estres_",mes_corte)
+setwd(directorio)
+write.table(sapply(TABLA_final,class), paste0("tipo_variables_TABLA_final", mes_corte,".csv"), row.names= F )
+fwrite(TABLA_final, paste0("TABLA_final", mes_corte,".CSV"), sep= ",",row.names= F)
+kable(TABLA_final)
+```
+
+
+
+
